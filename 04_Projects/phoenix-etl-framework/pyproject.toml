@@ -9,6 +9,7 @@ description = "Production-oriented ETL framework for the Mission Phoenix project
 requires-python = ">=3.12,<3.13"
 dependencies = [
     "pydantic>=2.13,<3.0",
+    "psycopg[binary]>=3.2,<4.0",
 ]
 
 [dependency-groups]

@@ -1,38 +1,84 @@
-import csv
 import json
+from collections.abc import Sequence
+from csv import DictReader, DictWriter
 from pathlib import Path
 
-from phoenix_etl.models import RejectedRecord
+from phoenix_etl.db import get_connection
+from phoenix_etl.models import RejectedRecord, Transaction
 
-REJECTED_RECORD_FIELDS = [
-    "pipeline_run_id",
-    "source_file",
-    "rejected_at",
-    "transaction_id",
-    "rejection_reason",
-    "original_record",
-]
+
+def write_transactions(records: Sequence[Transaction]) -> int:
+    """Insert new transactions or update them when the source version is newer."""
+
+    if not records:
+        return 0
+
+    query = """
+        INSERT INTO phoenix.transactions (
+            transaction_id,
+            customer_id,
+            amount,
+            currency,
+            timestamp,
+            source_updated_at
+        )
+        VALUES (
+            %(transaction_id)s,
+            %(customer_id)s,
+            %(amount)s,
+            %(currency)s,
+            %(timestamp)s,
+            %(source_updated_at)s
+        )
+        ON CONFLICT (transaction_id)
+        DO UPDATE SET
+            customer_id = EXCLUDED.customer_id,
+            amount = EXCLUDED.amount,
+            currency = EXCLUDED.currency,
+            timestamp = EXCLUDED.timestamp,
+            source_updated_at = EXCLUDED.source_updated_at
+        WHERE EXCLUDED.source_updated_at >
+              phoenix.transactions.source_updated_at
+    """
+
+    with get_connection() as connection:
+        with connection.cursor() as cursor:
+            for record in records:
+                cursor.execute(
+                    query,
+                    record.model_dump(),
+                )
+
+    return len(records)
 
 
 def write_rejected_records(
-    records: list[RejectedRecord],
+    records: Sequence[RejectedRecord],
     output_path: Path,
-) -> None:
-    """Append rejected records to the audit store without duplicates."""
+) -> int:
+    """Append unique rejected records to the rejected-records CSV file."""
 
     if not records:
-        return
+        return 0
 
-    output_path.parent.mkdir(parents=True, exist_ok=True)
+    fieldnames = [
+        "pipeline_run_id",
+        "source_file",
+        "rejected_at",
+        "transaction_id",
+        "rejection_reason",
+        "original_record",
+    ]
 
-    existing_keys: set[tuple[str, str]] = set()
+    existing_keys: set[tuple[str, str | None]] = set()
 
-    if output_path.exists():
+    if output_path.exists() and output_path.stat().st_size > 0:
         with output_path.open(
+            "r",
             newline="",
             encoding="utf-8",
         ) as file:
-            reader = csv.DictReader(file)
+            reader = DictReader(file)
 
             for row in reader:
                 existing_keys.add(
@@ -42,45 +88,47 @@ def write_rejected_records(
                     )
                 )
 
-    new_records = [
-        record
-        for record in records
-        if (
-            record.pipeline_run_id,
-            record.original_record["transaction_id"],
-        )
-        not in existing_keys
-    ]
+    file_exists = output_path.exists() and output_path.stat().st_size > 0
 
-    if not new_records:
-        return
-
-    file_exists = output_path.exists()
+    written_count = 0
 
     with output_path.open(
         "a",
         newline="",
         encoding="utf-8",
     ) as file:
-        writer = csv.DictWriter(
-            file,
-            fieldnames=REJECTED_RECORD_FIELDS,
-        )
+        writer = DictWriter(file, fieldnames=fieldnames)
 
         if not file_exists:
             writer.writeheader()
 
-        for record in new_records:
+        for record in records:
+            data = record.model_dump()
+
+            transaction_id = data["original_record"].get("transaction_id")
+
+            key = (
+                data["pipeline_run_id"],
+                transaction_id,
+            )
+
+            if key in existing_keys:
+                continue
+
             writer.writerow(
                 {
-                    "pipeline_run_id": record.pipeline_run_id,
-                    "source_file": record.source_file,
-                    "rejected_at": record.rejected_at.isoformat(),
-                    "transaction_id": record.original_record["transaction_id"],
-                    "rejection_reason": record.rejection_reason,
+                    "pipeline_run_id": data["pipeline_run_id"],
+                    "source_file": data["source_file"],
+                    "rejected_at": data["rejected_at"].isoformat(),
+                    "transaction_id": transaction_id,
+                    "rejection_reason": data["rejection_reason"],
                     "original_record": json.dumps(
-                        record.original_record,
-                        ensure_ascii=False,
+                        data["original_record"],
                     ),
                 }
             )
+
+            existing_keys.add(key)
+            written_count += 1
+
+    return written_count

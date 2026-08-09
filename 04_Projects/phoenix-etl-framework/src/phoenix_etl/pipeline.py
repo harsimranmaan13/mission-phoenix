@@ -34,7 +34,7 @@ def process_file(
     path: Path,
     pipeline_run_id: str,
 ) -> PipelineResult:
-    """Read, validate, and persist rejected transactions from a CSV file."""
+    """Read and validate all transactions from a CSV file."""
 
     valid_records: list[Transaction] = []
     rejected_records: list[RejectedRecord] = []
