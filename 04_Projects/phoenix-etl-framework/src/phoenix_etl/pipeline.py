@@ -5,7 +5,7 @@ from pydantic import BaseModel
 from phoenix_etl.models import RejectedRecord, Transaction
 from phoenix_etl.reader import read_transactions
 from phoenix_etl.validator import validate_transaction
-from phoenix_etl.writer import write_rejected_records
+from phoenix_etl.writer import write_rejected_records, write_transactions
 
 
 class PipelineResult(BaseModel):
@@ -34,7 +34,7 @@ def process_file(
     path: Path,
     pipeline_run_id: str,
 ) -> PipelineResult:
-    """Read and validate all transactions from a CSV file."""
+    """Read, validate, and persist all transactions from a CSV file."""
 
     valid_records: list[Transaction] = []
     rejected_records: list[RejectedRecord] = []
@@ -51,6 +51,8 @@ def process_file(
 
         if rejected is not None:
             rejected_records.append(rejected)
+
+    write_transactions(valid_records)
 
     rejected_path = path.parent / "rejected_records.csv"
 
