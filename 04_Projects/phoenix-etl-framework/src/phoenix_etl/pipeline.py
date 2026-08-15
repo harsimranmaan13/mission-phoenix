@@ -2,6 +2,7 @@ from pathlib import Path
 
 from pydantic import BaseModel
 
+from phoenix_etl.logging_config import get_logger
 from phoenix_etl.models import RejectedRecord, Transaction
 from phoenix_etl.reader import read_transactions
 from phoenix_etl.run_tracker import (
@@ -10,11 +11,9 @@ from phoenix_etl.run_tracker import (
     start_pipeline_run,
 )
 from phoenix_etl.validator import validate_transaction
-from phoenix_etl.writer import (
-    write_rejected_records,
-    write_rejected_records_to_db,
-    write_transactions,
-)
+from phoenix_etl.writer import write_rejected_records, write_transactions
+
+logger = get_logger("pipeline")
 
 
 class PipelineResult(BaseModel):
@@ -38,12 +37,34 @@ class PipelineResult(BaseModel):
         """Return the number of rejected records."""
         return len(self.rejected_records)
 
+    @property
+    def valid_rate(self) -> float:
+        """Return the percentage of records that passed validation."""
+        if self.total_records == 0:
+            return 0.0
+
+        return self.valid_count / self.total_records
+
+    @property
+    def rejection_rate(self) -> float:
+        """Return the percentage of records rejected during validation."""
+        if self.total_records == 0:
+            return 0.0
+
+        return self.rejected_count / self.total_records
+
 
 def process_file(
     path: Path,
     pipeline_run_id: str,
 ) -> PipelineResult:
     """Read, validate, and persist all transactions from a CSV file."""
+
+    logger.info(
+        "Pipeline started: run_id=%s source_file=%s",
+        pipeline_run_id,
+        path,
+    )
 
     start_pipeline_run(
         pipeline_run_id=pipeline_run_id,
@@ -67,9 +88,17 @@ def process_file(
             if rejected is not None:
                 rejected_records.append(rejected)
 
-        write_transactions(valid_records)
+        total_records = len(valid_records) + len(rejected_records)
 
-        write_rejected_records_to_db(rejected_records)
+        logger.info(
+            "Validation completed: run_id=%s total=%d valid=%d rejected=%d",
+            pipeline_run_id,
+            total_records,
+            len(valid_records),
+            len(rejected_records),
+        )
+
+        write_transactions(valid_records)
 
         rejected_path = path.parent / "rejected_records.csv"
 
@@ -80,9 +109,17 @@ def process_file(
 
         complete_pipeline_run(
             pipeline_run_id=pipeline_run_id,
-            total_records=len(valid_records) + len(rejected_records),
+            total_records=total_records,
             valid_records=len(valid_records),
             rejected_records=len(rejected_records),
+        )
+
+        logger.info(
+            "Pipeline completed: run_id=%s total=%d valid=%d rejected=%d",
+            pipeline_run_id,
+            total_records,
+            len(valid_records),
+            len(rejected_records),
         )
 
         return PipelineResult(
@@ -91,8 +128,15 @@ def process_file(
         )
 
     except Exception as exc:
+        logger.exception(
+            "Pipeline failed: run_id=%s error=%s",
+            pipeline_run_id,
+            str(exc),
+        )
+
         fail_pipeline_run(
             pipeline_run_id=pipeline_run_id,
             error_message=str(exc),
         )
+
         raise
