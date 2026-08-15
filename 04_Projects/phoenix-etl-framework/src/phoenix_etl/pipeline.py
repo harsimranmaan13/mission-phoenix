@@ -10,7 +10,11 @@ from phoenix_etl.run_tracker import (
     start_pipeline_run,
 )
 from phoenix_etl.validator import validate_transaction
-from phoenix_etl.writer import write_rejected_records, write_transactions
+from phoenix_etl.writer import (
+    write_rejected_records,
+    write_rejected_records_to_db,
+    write_transactions,
+)
 
 
 class PipelineResult(BaseModel):
@@ -64,6 +68,8 @@ def process_file(
                 rejected_records.append(rejected)
 
         write_transactions(valid_records)
+
+        write_rejected_records_to_db(rejected_records)
 
         rejected_path = path.parent / "rejected_records.csv"
 

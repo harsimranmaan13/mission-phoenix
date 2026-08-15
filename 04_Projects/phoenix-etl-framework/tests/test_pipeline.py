@@ -24,6 +24,7 @@ def test_process_file_separates_valid_and_invalid_records(
         patch("phoenix_etl.pipeline.complete_pipeline_run"),
         patch("phoenix_etl.pipeline.fail_pipeline_run"),
         patch("phoenix_etl.pipeline.write_transactions"),
+        patch("phoenix_etl.pipeline.write_rejected_records_to_db"),
     ):
         result = process_file(csv_file, "run-001")
 
@@ -57,6 +58,7 @@ def test_process_file_preserves_pipeline_run_id(
         patch("phoenix_etl.pipeline.complete_pipeline_run"),
         patch("phoenix_etl.pipeline.fail_pipeline_run"),
         patch("phoenix_etl.pipeline.write_transactions"),
+        patch("phoenix_etl.pipeline.write_rejected_records_to_db"),
     ):
         result = process_file(csv_file, "run-123")
 
@@ -86,6 +88,7 @@ def test_process_file_writes_rejected_records(
         patch("phoenix_etl.pipeline.complete_pipeline_run"),
         patch("phoenix_etl.pipeline.fail_pipeline_run"),
         patch("phoenix_etl.pipeline.write_transactions"),
+        patch("phoenix_etl.pipeline.write_rejected_records_to_db"),
     ):
         result = process_file(csv_file, "run-001")
 

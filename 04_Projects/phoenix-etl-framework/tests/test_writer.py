@@ -2,9 +2,13 @@ import csv
 import json
 from datetime import datetime, timezone
 from pathlib import Path
+from unittest.mock import patch
 
 from phoenix_etl.models import RejectedRecord
-from phoenix_etl.writer import write_rejected_records
+from phoenix_etl.writer import (
+    write_rejected_records,
+    write_rejected_records_to_db,
+)
 
 
 def create_rejected_record(
@@ -132,3 +136,31 @@ def test_empty_records_do_not_create_file(
     write_rejected_records([], output_path)
 
     assert not output_path.exists()
+
+
+def test_write_rejected_records_to_db() -> None:
+    record = create_rejected_record("T002", "run-001")
+
+    with patch("phoenix_etl.writer.get_connection") as mock_connection:
+        connection = mock_connection.return_value.__enter__.return_value
+        cursor = connection.cursor.return_value.__enter__.return_value
+
+        result = write_rejected_records_to_db([record])
+
+    assert result == 1
+    cursor.execute.assert_called_once()
+
+    query, params = cursor.execute.call_args.args
+
+    assert "INSERT INTO phoenix.rejected_records" in query
+    assert params["pipeline_run_id"] == "run-001"
+    assert params["transaction_id"] == "T002"
+    assert params["rejection_reason"] == ("amount must be greater than or equal to 0")
+
+
+def test_write_rejected_records_to_db_empty_records() -> None:
+    with patch("phoenix_etl.writer.get_connection") as mock_connection:
+        result = write_rejected_records_to_db([])
+
+    assert result == 0
+    mock_connection.assert_not_called()

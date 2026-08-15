@@ -52,6 +52,57 @@ def write_transactions(records: Sequence[Transaction]) -> int:
     return len(records)
 
 
+def write_rejected_records_to_db(
+    records: Sequence[RejectedRecord],
+) -> int:
+    """Persist rejected records to PostgreSQL."""
+
+    if not records:
+        return 0
+
+    query = """
+        INSERT INTO phoenix.rejected_records (
+            pipeline_run_id,
+            source_file,
+            rejected_at,
+            transaction_id,
+            rejection_reason,
+            original_record
+        )
+        VALUES (
+            %(pipeline_run_id)s,
+            %(source_file)s,
+            %(rejected_at)s,
+            %(transaction_id)s,
+            %(rejection_reason)s,
+            %(original_record)s
+        )
+    """
+
+    with get_connection() as connection:
+        with connection.cursor() as cursor:
+            for record in records:
+                data = record.model_dump()
+
+                transaction_id = data["original_record"].get("transaction_id")
+
+                cursor.execute(
+                    query,
+                    {
+                        "pipeline_run_id": data["pipeline_run_id"],
+                        "source_file": data["source_file"],
+                        "rejected_at": data["rejected_at"],
+                        "transaction_id": transaction_id,
+                        "rejection_reason": data["rejection_reason"],
+                        "original_record": json.dumps(
+                            data["original_record"],
+                        ),
+                    },
+                )
+
+    return len(records)
+
+
 def write_rejected_records(
     records: Sequence[RejectedRecord],
     output_path: Path,
