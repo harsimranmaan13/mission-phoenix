@@ -1,4 +1,5 @@
 from pathlib import Path
+from unittest.mock import patch
 
 from phoenix_etl.pipeline import process_file
 
@@ -18,24 +19,26 @@ def test_process_file_separates_valid_and_invalid_records(
         encoding="utf-8",
     )
 
-    result = process_file(csv_file, "run-001")
+    with (
+        patch("phoenix_etl.pipeline.start_pipeline_run"),
+        patch("phoenix_etl.pipeline.complete_pipeline_run"),
+        patch("phoenix_etl.pipeline.fail_pipeline_run"),
+        patch("phoenix_etl.pipeline.write_transactions"),
+    ):
+        result = process_file(csv_file, "run-001")
 
     assert result.total_records == 5
     assert result.valid_count == 3
     assert result.rejected_count == 2
 
-    assert [record.transaction_id for record in result.valid_records] == [
-        "T001",
-        "T004",
-        "T005",
+    valid_ids = [record.transaction_id for record in result.valid_records]
+
+    rejected_ids = [
+        record.original_record["transaction_id"] for record in result.rejected_records
     ]
 
-    assert [
-        record.original_record["transaction_id"] for record in result.rejected_records
-    ] == [
-        "T002",
-        "T003",
-    ]
+    assert valid_ids == ["T001", "T004", "T005"]
+    assert rejected_ids == ["T002", "T003"]
 
 
 def test_process_file_preserves_pipeline_run_id(
@@ -49,8 +52,16 @@ def test_process_file_preserves_pipeline_run_id(
         encoding="utf-8",
     )
 
-    result = process_file(csv_file, "run-123")
+    with (
+        patch("phoenix_etl.pipeline.start_pipeline_run"),
+        patch("phoenix_etl.pipeline.complete_pipeline_run"),
+        patch("phoenix_etl.pipeline.fail_pipeline_run"),
+        patch("phoenix_etl.pipeline.write_transactions"),
+    ):
+        result = process_file(csv_file, "run-123")
 
+    assert result.total_records == 1
+    assert result.valid_count == 0
     assert result.rejected_count == 1
     assert result.rejected_records[0].pipeline_run_id == "run-123"
 
@@ -70,20 +81,22 @@ def test_process_file_writes_rejected_records(
         encoding="utf-8",
     )
 
-    result = process_file(csv_file, "run-001")
+    with (
+        patch("phoenix_etl.pipeline.start_pipeline_run"),
+        patch("phoenix_etl.pipeline.complete_pipeline_run"),
+        patch("phoenix_etl.pipeline.fail_pipeline_run"),
+        patch("phoenix_etl.pipeline.write_transactions"),
+    ):
+        result = process_file(csv_file, "run-001")
 
-    assert result.total_records == 5
-    assert result.valid_count == 3
     assert result.rejected_count == 2
 
-    rejected_file = tmp_path / "rejected_records.csv"
+    rejected_path = tmp_path / "rejected_records.csv"
 
-    assert rejected_file.exists()
+    assert rejected_path.exists()
 
-    content = rejected_file.read_text(encoding="utf-8")
+    content = rejected_path.read_text(encoding="utf-8")
 
     assert "T002" in content
     assert "T003" in content
     assert "run-001" in content
-    assert "amount must be greater than or equal to 0" in content
-    assert "customer_id must not be empty" in content

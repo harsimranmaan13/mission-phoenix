@@ -26,16 +26,53 @@ def test_process_file_persists_valid_transactions(
 
     with get_connection() as connection:
         with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                DELETE FROM phoenix.pipeline_runs
+                WHERE pipeline_run_id = %(pipeline_run_id)s
+                """,
+                {"pipeline_run_id": pipeline_run_id},
+            )
+
             cursor.execute("""
                 DELETE FROM phoenix.transactions
                 WHERE transaction_id IN ('T001', 'T004', 'T005')
                 """)
-
     result = process_file(csv_file, pipeline_run_id)
 
-    assert result.total_records == 5
-    assert result.valid_count == 3
-    assert result.rejected_count == 2
+    with get_connection() as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT
+                    pipeline_run_id,
+                    source_file,
+                    total_records,
+                    valid_records,
+                    rejected_records,
+                    status,
+                    started_at,
+                    completed_at,
+                    error_message
+                FROM phoenix.pipeline_runs
+                WHERE pipeline_run_id = %(pipeline_run_id)s
+                """,
+                {"pipeline_run_id": pipeline_run_id},
+            )
+
+            run = cursor.fetchone()
+
+    assert run is not None
+
+    assert run[0] == pipeline_run_id
+    assert run[1] == str(csv_file)
+    assert run[2] == 5
+    assert run[3] == 3
+    assert run[4] == 2
+    assert run[5] == "COMPLETED"
+    assert run[6] is not None
+    assert run[7] is not None
+    assert run[8] is None
 
     with get_connection() as connection:
         with connection.cursor() as cursor:

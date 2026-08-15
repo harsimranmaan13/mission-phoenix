@@ -4,6 +4,11 @@ from pydantic import BaseModel
 
 from phoenix_etl.models import RejectedRecord, Transaction
 from phoenix_etl.reader import read_transactions
+from phoenix_etl.run_tracker import (
+    complete_pipeline_run,
+    fail_pipeline_run,
+    start_pipeline_run,
+)
 from phoenix_etl.validator import validate_transaction
 from phoenix_etl.writer import write_rejected_records, write_transactions
 
@@ -36,32 +41,52 @@ def process_file(
 ) -> PipelineResult:
     """Read, validate, and persist all transactions from a CSV file."""
 
-    valid_records: list[Transaction] = []
-    rejected_records: list[RejectedRecord] = []
+    start_pipeline_run(
+        pipeline_run_id=pipeline_run_id,
+        source_file=str(path),
+    )
 
-    for record in read_transactions(path):
-        transaction, rejected = validate_transaction(
-            record,
-            source_file=str(path),
-            pipeline_run_id=pipeline_run_id,
+    try:
+        valid_records: list[Transaction] = []
+        rejected_records: list[RejectedRecord] = []
+
+        for record in read_transactions(path):
+            transaction, rejected = validate_transaction(
+                record,
+                source_file=str(path),
+                pipeline_run_id=pipeline_run_id,
+            )
+
+            if transaction is not None:
+                valid_records.append(transaction)
+
+            if rejected is not None:
+                rejected_records.append(rejected)
+
+        write_transactions(valid_records)
+
+        rejected_path = path.parent / "rejected_records.csv"
+
+        write_rejected_records(
+            rejected_records,
+            rejected_path,
         )
 
-        if transaction is not None:
-            valid_records.append(transaction)
+        complete_pipeline_run(
+            pipeline_run_id=pipeline_run_id,
+            total_records=len(valid_records) + len(rejected_records),
+            valid_records=len(valid_records),
+            rejected_records=len(rejected_records),
+        )
 
-        if rejected is not None:
-            rejected_records.append(rejected)
+        return PipelineResult(
+            valid_records=valid_records,
+            rejected_records=rejected_records,
+        )
 
-    write_transactions(valid_records)
-
-    rejected_path = path.parent / "rejected_records.csv"
-
-    write_rejected_records(
-        rejected_records,
-        rejected_path,
-    )
-
-    return PipelineResult(
-        valid_records=valid_records,
-        rejected_records=rejected_records,
-    )
+    except Exception as exc:
+        fail_pipeline_run(
+            pipeline_run_id=pipeline_run_id,
+            error_message=str(exc),
+        )
+        raise
