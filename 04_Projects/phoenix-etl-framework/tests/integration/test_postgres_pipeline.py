@@ -1,4 +1,5 @@
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
@@ -38,7 +39,12 @@ def test_process_file_persists_valid_transactions(
                 DELETE FROM phoenix.transactions
                 WHERE transaction_id IN ('T001', 'T004', 'T005')
                 """)
+
     result = process_file(csv_file, pipeline_run_id)
+
+    assert result.total_records == 5
+    assert result.valid_count == 3
+    assert result.rejected_count == 2
 
     with get_connection() as connection:
         with connection.cursor() as cursor:
@@ -88,3 +94,72 @@ def test_process_file_persists_valid_transactions(
     transaction_ids = [row[0] for row in rows]
 
     assert transaction_ids == ["T001", "T004", "T005"]
+
+
+@pytest.mark.integration
+def test_process_file_records_failed_pipeline_run(
+    tmp_path: Path,
+) -> None:
+    csv_file = tmp_path / "transactions.csv"
+
+    csv_file.write_text(
+        "transaction_id,customer_id,amount,currency,timestamp,source_updated_at\n"
+        "T001,C001,1500.00,INR,2026-08-09T10:15:00,2026-08-09T10:20:00\n",
+        encoding="utf-8",
+    )
+
+    pipeline_run_id = "integration-failure-test-001"
+
+    with get_connection() as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                DELETE FROM phoenix.pipeline_runs
+                WHERE pipeline_run_id = %(pipeline_run_id)s
+                """,
+                {"pipeline_run_id": pipeline_run_id},
+            )
+
+    with patch(
+        "phoenix_etl.pipeline.write_transactions",
+        side_effect=RuntimeError("simulated database failure"),
+    ):
+        with pytest.raises(
+            RuntimeError,
+            match="simulated database failure",
+        ):
+            process_file(csv_file, pipeline_run_id)
+
+    with get_connection() as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT
+                    pipeline_run_id,
+                    source_file,
+                    total_records,
+                    valid_records,
+                    rejected_records,
+                    status,
+                    started_at,
+                    completed_at,
+                    error_message
+                FROM phoenix.pipeline_runs
+                WHERE pipeline_run_id = %(pipeline_run_id)s
+                """,
+                {"pipeline_run_id": pipeline_run_id},
+            )
+
+            run = cursor.fetchone()
+
+    assert run is not None
+
+    assert run[0] == pipeline_run_id
+    assert run[1] == str(csv_file)
+    assert run[2] == 0
+    assert run[3] == 0
+    assert run[4] == 0
+    assert run[5] == "FAILED"
+    assert run[6] is not None
+    assert run[7] is not None
+    assert run[8] == "simulated database failure"
