@@ -1,4 +1,5 @@
 from pathlib import Path
+from time import perf_counter
 
 from pydantic import BaseModel
 
@@ -21,6 +22,7 @@ class PipelineResult(BaseModel):
 
     valid_records: list[Transaction]
     rejected_records: list[RejectedRecord]
+    processing_duration_seconds: float = 0.0
 
     @property
     def total_records(self) -> int:
@@ -53,6 +55,14 @@ class PipelineResult(BaseModel):
 
         return self.rejected_count / self.total_records
 
+    @property
+    def records_per_second(self) -> float:
+        """Return the processing throughput in records per second."""
+        if self.processing_duration_seconds <= 0:
+            return 0.0
+
+        return self.total_records / self.processing_duration_seconds
+
 
 def process_file(
     path: Path,
@@ -70,6 +80,8 @@ def process_file(
         pipeline_run_id=pipeline_run_id,
         source_file=str(path),
     )
+
+    processing_start = perf_counter()
 
     try:
         valid_records: list[Transaction] = []
@@ -107,24 +119,45 @@ def process_file(
             rejected_path,
         )
 
+        processing_duration_seconds = perf_counter() - processing_start
+
+        rejection_rate = (
+            len(rejected_records) / total_records if total_records > 0 else 0.0
+        )
+
+        records_per_second = (
+            total_records / processing_duration_seconds
+            if processing_duration_seconds > 0
+            else 0.0
+        )
+
         complete_pipeline_run(
             pipeline_run_id=pipeline_run_id,
             total_records=total_records,
             valid_records=len(valid_records),
             rejected_records=len(rejected_records),
+            rejection_rate=rejection_rate,
+            processing_duration_seconds=processing_duration_seconds,
+            records_per_second=records_per_second,
         )
 
         logger.info(
-            "Pipeline completed: run_id=%s total=%d valid=%d rejected=%d",
+            "Pipeline completed: run_id=%s total=%d valid=%d "
+            "rejected=%d rejection_rate=%.4f duration=%.4fs "
+            "records_per_second=%.2f",
             pipeline_run_id,
             total_records,
             len(valid_records),
             len(rejected_records),
+            rejection_rate,
+            processing_duration_seconds,
+            records_per_second,
         )
 
         return PipelineResult(
             valid_records=valid_records,
             rejected_records=rejected_records,
+            processing_duration_seconds=processing_duration_seconds,
         )
 
     except Exception as exc:

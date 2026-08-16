@@ -45,9 +45,12 @@ def complete_pipeline_run(
     total_records: int,
     valid_records: int,
     rejected_records: int,
+    rejection_rate: float,
+    processing_duration_seconds: float,
+    records_per_second: float,
     completed_at: datetime | None = None,
 ) -> None:
-    """Mark a pipeline run as COMPLETED with processing counts."""
+    """Mark a pipeline run as COMPLETED with operational metrics."""
 
     if completed_at is None:
         completed_at = datetime.now(timezone.utc)
@@ -59,6 +62,9 @@ def complete_pipeline_run(
             total_records = %(total_records)s,
             valid_records = %(valid_records)s,
             rejected_records = %(rejected_records)s,
+            rejection_rate = %(rejection_rate)s,
+            processing_duration_seconds = %(processing_duration_seconds)s,
+            records_per_second = %(records_per_second)s,
             status = 'COMPLETED'
         WHERE pipeline_run_id = %(pipeline_run_id)s
     """
@@ -73,6 +79,9 @@ def complete_pipeline_run(
                     "total_records": total_records,
                     "valid_records": valid_records,
                     "rejected_records": rejected_records,
+                    "rejection_rate": rejection_rate,
+                    "processing_duration_seconds": processing_duration_seconds,
+                    "records_per_second": records_per_second,
                 },
             )
 

@@ -30,6 +30,9 @@ CREATE TABLE IF NOT EXISTS phoenix.pipeline_runs (
     total_records INTEGER NOT NULL DEFAULT 0,
     valid_records INTEGER NOT NULL DEFAULT 0,
     rejected_records INTEGER NOT NULL DEFAULT 0,
+    rejection_rate NUMERIC(10, 6) NOT NULL DEFAULT 0,
+    processing_duration_seconds NUMERIC(18, 6) NOT NULL DEFAULT 0,
+    records_per_second NUMERIC(18, 6) NOT NULL DEFAULT 0,
     status VARCHAR(20) NOT NULL,
     error_message TEXT,
 
@@ -46,5 +49,17 @@ CREATE TABLE IF NOT EXISTS phoenix.pipeline_runs (
         CHECK (rejected_records >= 0),
 
     CONSTRAINT pipeline_runs_counts_check
-        CHECK (valid_records + rejected_records <= total_records)
+        CHECK (valid_records + rejected_records <= total_records),
+
+    CONSTRAINT pipeline_runs_rejection_rate_check
+        CHECK (
+            rejection_rate >= 0
+            AND rejection_rate <= 1
+        ),
+
+    CONSTRAINT pipeline_runs_duration_check
+        CHECK (processing_duration_seconds >= 0),
+
+    CONSTRAINT pipeline_runs_throughput_check
+        CHECK (records_per_second >= 0)
 );
