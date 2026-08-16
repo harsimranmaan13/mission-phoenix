@@ -44,7 +44,14 @@ def test_start_pipeline_run() -> None:
 def test_complete_pipeline_run() -> None:
     connection, cursor = create_connection_mock()
 
-    completed_at = datetime(2026, 8, 12, 10, 5, tzinfo=timezone.utc)
+    completed_at = datetime(
+        2026,
+        8,
+        12,
+        10,
+        5,
+        tzinfo=timezone.utc,
+    )
 
     with patch(
         "phoenix_etl.run_tracker.get_connection",
@@ -55,6 +62,9 @@ def test_complete_pipeline_run() -> None:
             total_records=10,
             valid_records=8,
             rejected_records=2,
+            rejection_rate=0.2,
+            processing_duration_seconds=5.0,
+            records_per_second=2.0,
             completed_at=completed_at,
         )
 
@@ -63,17 +73,30 @@ def test_complete_pipeline_run() -> None:
     query, params = cursor.execute.call_args.args
 
     assert "UPDATE phoenix.pipeline_runs" in query
+
     assert params["pipeline_run_id"] == "run-001"
     assert params["total_records"] == 10
     assert params["valid_records"] == 8
     assert params["rejected_records"] == 2
+
+    assert params["rejection_rate"] == 0.2
+    assert params["processing_duration_seconds"] == 5.0
+    assert params["records_per_second"] == 2.0
+
     assert params["completed_at"] == completed_at
 
 
 def test_fail_pipeline_run() -> None:
     connection, cursor = create_connection_mock()
 
-    failed_at = datetime(2026, 8, 12, 10, 5, tzinfo=timezone.utc)
+    failed_at = datetime(
+        2026,
+        8,
+        12,
+        10,
+        5,
+        tzinfo=timezone.utc,
+    )
 
     with patch(
         "phoenix_etl.run_tracker.get_connection",
