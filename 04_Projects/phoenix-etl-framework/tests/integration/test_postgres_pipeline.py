@@ -1,10 +1,13 @@
+from datetime import datetime, timezone
+from decimal import Decimal
 from pathlib import Path
-from unittest.mock import patch
 
 import pytest
 
 from phoenix_etl.db import get_connection
+from phoenix_etl.models import Transaction
 from phoenix_etl.pipeline import process_file
+from phoenix_etl.writer import write_transactions
 
 
 @pytest.mark.integration
@@ -120,13 +123,15 @@ def test_process_file_records_failed_pipeline_run(
                 {"pipeline_run_id": pipeline_run_id},
             )
 
-    with patch(
-        "phoenix_etl.pipeline.write_transactions",
-        side_effect=RuntimeError("simulated database failure"),
+    with pytest.raises(
+        RuntimeError,
+        match="simulated database failure",
     ):
-        with pytest.raises(
-            RuntimeError,
-            match="simulated database failure",
+        from unittest.mock import patch
+
+        with patch(
+            "phoenix_etl.pipeline.write_transactions",
+            side_effect=RuntimeError("simulated database failure"),
         ):
             process_file(csv_file, pipeline_run_id)
 
@@ -163,3 +168,131 @@ def test_process_file_records_failed_pipeline_run(
     assert run[6] is not None
     assert run[7] is not None
     assert run[8] == "simulated database failure"
+
+
+@pytest.mark.integration
+def test_write_transactions_does_not_overwrite_newer_source_version() -> None:
+    transaction_id = "IDEMPOTENCY-001"
+
+    newer_version = Transaction(
+        transaction_id=transaction_id,
+        customer_id="C001",
+        amount=Decimal("250.00"),
+        currency="INR",
+        timestamp=datetime(
+            2026,
+            8,
+            16,
+            10,
+            30,
+            tzinfo=timezone.utc,
+        ),
+        source_updated_at=datetime(
+            2026,
+            8,
+            16,
+            10,
+            30,
+            tzinfo=timezone.utc,
+        ),
+    )
+
+    stale_version = Transaction(
+        transaction_id=transaction_id,
+        customer_id="C001",
+        amount=Decimal("50.00"),
+        currency="INR",
+        timestamp=datetime(
+            2026,
+            8,
+            16,
+            9,
+            0,
+            tzinfo=timezone.utc,
+        ),
+        source_updated_at=datetime(
+            2026,
+            8,
+            16,
+            9,
+            0,
+            tzinfo=timezone.utc,
+        ),
+    )
+
+    # Ensure the integration-test record does not already exist.
+    with get_connection() as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                DELETE FROM phoenix.transactions
+                WHERE transaction_id = %(transaction_id)s
+                """,
+                {"transaction_id": transaction_id},
+            )
+
+    # Insert the newer version.
+    result = write_transactions([newer_version])
+
+    assert result == 1
+
+    # Attempt to overwrite it with an older source version.
+    result = write_transactions([stale_version])
+
+    assert result == 1
+
+    # Verify that the database still contains the newer version.
+    with get_connection() as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT
+                    transaction_id,
+                    customer_id,
+                    amount,
+                    currency,
+                    timestamp,
+                    source_updated_at
+                FROM phoenix.transactions
+                WHERE transaction_id = %(transaction_id)s
+                """,
+                {"transaction_id": transaction_id},
+            )
+
+            row = cursor.fetchone()
+
+    assert row is not None
+
+    assert row[0] == transaction_id
+    assert row[1] == "C001"
+    assert row[2] == Decimal("250.00")
+    assert row[3] == "INR"
+
+    assert row[4] == datetime(
+        2026,
+        8,
+        16,
+        10,
+        30,
+        tzinfo=timezone.utc,
+    )
+
+    assert row[5] == datetime(
+        2026,
+        8,
+        16,
+        10,
+        30,
+        tzinfo=timezone.utc,
+    )
+
+    # Clean up the integration-test record.
+    with get_connection() as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                DELETE FROM phoenix.transactions
+                WHERE transaction_id = %(transaction_id)s
+                """,
+                {"transaction_id": transaction_id},
+            )

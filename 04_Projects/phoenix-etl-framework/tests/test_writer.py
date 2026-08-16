@@ -1,13 +1,15 @@
 import csv
 import json
 from datetime import datetime, timezone
+from decimal import Decimal
 from pathlib import Path
 from unittest.mock import patch
 
-from phoenix_etl.models import RejectedRecord
+from phoenix_etl.models import RejectedRecord, Transaction
 from phoenix_etl.writer import (
     write_rejected_records,
     write_rejected_records_to_db,
+    write_transactions,
 )
 
 
@@ -38,12 +40,109 @@ def create_rejected_record(
     )
 
 
+def create_transaction(
+    transaction_id: str = "T001",
+    customer_id: str = "C001",
+    amount: str = "1500.00",
+    currency: str = "INR",
+    timestamp: datetime | None = None,
+    source_updated_at: datetime | None = None,
+) -> Transaction:
+    if timestamp is None:
+        timestamp = datetime(
+            2026,
+            8,
+            9,
+            10,
+            15,
+            tzinfo=timezone.utc,
+        )
+
+    if source_updated_at is None:
+        source_updated_at = datetime(
+            2026,
+            8,
+            9,
+            10,
+            20,
+            tzinfo=timezone.utc,
+        )
+
+    return Transaction(
+        transaction_id=transaction_id,
+        customer_id=customer_id,
+        amount=Decimal(amount),
+        currency=currency,
+        timestamp=timestamp,
+        source_updated_at=source_updated_at,
+    )
+
+
 def read_rows(output_path: Path) -> list[dict[str, str]]:
     with output_path.open(
         newline="",
         encoding="utf-8",
     ) as file:
         return list(csv.DictReader(file))
+
+
+# ---------------------------------------------------------------------------
+# Transaction writer tests
+# ---------------------------------------------------------------------------
+
+
+def test_write_transactions_empty_records() -> None:
+    with patch("phoenix_etl.writer.get_connection") as mock_connection:
+        result = write_transactions([])
+
+    assert result == 0
+    mock_connection.assert_not_called()
+
+
+def test_write_transactions_inserts_transactions() -> None:
+    transaction = create_transaction()
+
+    with patch("phoenix_etl.writer.get_connection") as mock_connection:
+        connection = mock_connection.return_value.__enter__.return_value
+        cursor = connection.cursor.return_value.__enter__.return_value
+
+        result = write_transactions([transaction])
+
+    assert result == 1
+
+    cursor.execute.assert_called_once()
+
+    query, params = cursor.execute.call_args.args
+
+    assert "INSERT INTO phoenix.transactions" in query
+    assert "ON CONFLICT (transaction_id)" in query
+    assert "DO UPDATE SET" in query
+    assert "EXCLUDED.source_updated_at" in query
+
+    assert params["transaction_id"] == "T001"
+    assert params["customer_id"] == "C001"
+    assert params["amount"] == Decimal("1500.00")
+    assert params["currency"] == "INR"
+
+
+def test_write_transactions_uses_source_updated_at_for_idempotency() -> None:
+    transaction = create_transaction()
+
+    with patch("phoenix_etl.writer.get_connection") as mock_connection:
+        connection = mock_connection.return_value.__enter__.return_value
+        cursor = connection.cursor.return_value.__enter__.return_value
+
+        write_transactions([transaction])
+
+    query, _ = cursor.execute.call_args.args
+
+    assert "WHERE EXCLUDED.source_updated_at >" in query
+    assert "phoenix.transactions.source_updated_at" in query
+
+
+# ---------------------------------------------------------------------------
+# Rejected-record CSV tests
+# ---------------------------------------------------------------------------
 
 
 def test_write_rejected_records(tmp_path: Path) -> None:
@@ -138,6 +237,11 @@ def test_empty_records_do_not_create_file(
     assert not output_path.exists()
 
 
+# ---------------------------------------------------------------------------
+# Rejected-record PostgreSQL writer tests
+# ---------------------------------------------------------------------------
+
+
 def test_write_rejected_records_to_db() -> None:
     record = create_rejected_record("T002", "run-001")
 
@@ -148,6 +252,7 @@ def test_write_rejected_records_to_db() -> None:
         result = write_rejected_records_to_db([record])
 
     assert result == 1
+
     cursor.execute.assert_called_once()
 
     query, params = cursor.execute.call_args.args
