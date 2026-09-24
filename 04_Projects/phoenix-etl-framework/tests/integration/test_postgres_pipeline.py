@@ -1,6 +1,7 @@
 from datetime import datetime, timezone
 from decimal import Decimal
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
@@ -11,7 +12,7 @@ from phoenix_etl.writer import write_transactions
 
 
 @pytest.mark.integration
-def test_process_file_persists_valid_transactions(
+def test_process_file_persists_valid_and_rejected_records(
     tmp_path: Path,
 ) -> None:
     csv_file = tmp_path / "transactions.csv"
@@ -32,6 +33,14 @@ def test_process_file_persists_valid_transactions(
         with connection.cursor() as cursor:
             cursor.execute(
                 """
+                DELETE FROM phoenix.rejected_records
+                WHERE pipeline_run_id = %(pipeline_run_id)s
+                """,
+                {"pipeline_run_id": pipeline_run_id},
+            )
+
+            cursor.execute(
+                """
                 DELETE FROM phoenix.pipeline_runs
                 WHERE pipeline_run_id = %(pipeline_run_id)s
                 """,
@@ -43,11 +52,18 @@ def test_process_file_persists_valid_transactions(
                 WHERE transaction_id IN ('T001', 'T004', 'T005')
                 """)
 
-    result = process_file(csv_file, pipeline_run_id)
+    result = process_file(
+        csv_file,
+        pipeline_run_id,
+    )
 
     assert result.total_records == 5
     assert result.valid_count == 3
     assert result.rejected_count == 2
+
+    # ------------------------------------------------------------------
+    # Verify pipeline run metadata.
+    # ------------------------------------------------------------------
 
     with get_connection() as connection:
         with connection.cursor() as cursor:
@@ -59,6 +75,9 @@ def test_process_file_persists_valid_transactions(
                     total_records,
                     valid_records,
                     rejected_records,
+                    rejection_rate,
+                    processing_duration_seconds,
+                    records_per_second,
                     status,
                     started_at,
                     completed_at,
@@ -78,10 +97,17 @@ def test_process_file_persists_valid_transactions(
     assert run[2] == 5
     assert run[3] == 3
     assert run[4] == 2
-    assert run[5] == "COMPLETED"
-    assert run[6] is not None
-    assert run[7] is not None
-    assert run[8] is None
+    assert run[5] == Decimal("0.400000")
+    assert run[6] > 0
+    assert run[7] > 0
+    assert run[8] == "COMPLETED"
+    assert run[9] is not None
+    assert run[10] is not None
+    assert run[11] is None
+
+    # ------------------------------------------------------------------
+    # Verify valid transactions.
+    # ------------------------------------------------------------------
 
     with get_connection() as connection:
         with connection.cursor() as cursor:
@@ -96,7 +122,79 @@ def test_process_file_persists_valid_transactions(
 
     transaction_ids = [row[0] for row in rows]
 
-    assert transaction_ids == ["T001", "T004", "T005"]
+    assert transaction_ids == [
+        "T001",
+        "T004",
+        "T005",
+    ]
+
+    # ------------------------------------------------------------------
+    # Verify rejected records were persisted to PostgreSQL.
+    # ------------------------------------------------------------------
+
+    with get_connection() as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT
+                    pipeline_run_id,
+                    source_file,
+                    transaction_id,
+                    rejection_reason,
+                    original_record
+                FROM phoenix.rejected_records
+                WHERE pipeline_run_id = %(pipeline_run_id)s
+                ORDER BY transaction_id
+                """,
+                {"pipeline_run_id": pipeline_run_id},
+            )
+
+            rejected_rows = cursor.fetchall()
+
+    assert len(rejected_rows) == 2
+
+    assert rejected_rows[0][0] == pipeline_run_id
+    assert rejected_rows[0][1] == str(csv_file)
+    assert rejected_rows[0][2] == "T002"
+    assert rejected_rows[0][3] == "amount must be greater than or equal to 0"
+
+    assert rejected_rows[1][0] == pipeline_run_id
+    assert rejected_rows[1][1] == str(csv_file)
+    assert rejected_rows[1][2] == "T003"
+    assert rejected_rows[1][3] == "customer_id must not be empty"
+
+    assert rejected_rows[0][4]["transaction_id"] == "T002"
+    assert rejected_rows[0][4]["amount"] == "-100.00"
+
+    assert rejected_rows[1][4]["transaction_id"] == "T003"
+    assert rejected_rows[1][4]["customer_id"] == ""
+
+    # ------------------------------------------------------------------
+    # Cleanup.
+    # ------------------------------------------------------------------
+
+    with get_connection() as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                DELETE FROM phoenix.rejected_records
+                WHERE pipeline_run_id = %(pipeline_run_id)s
+                """,
+                {"pipeline_run_id": pipeline_run_id},
+            )
+
+            cursor.execute(
+                """
+                DELETE FROM phoenix.pipeline_runs
+                WHERE pipeline_run_id = %(pipeline_run_id)s
+                """,
+                {"pipeline_run_id": pipeline_run_id},
+            )
+
+            cursor.execute("""
+                DELETE FROM phoenix.transactions
+                WHERE transaction_id IN ('T001', 'T004', 'T005')
+                """)
 
 
 @pytest.mark.integration
@@ -127,13 +225,14 @@ def test_process_file_records_failed_pipeline_run(
         RuntimeError,
         match="simulated database failure",
     ):
-        from unittest.mock import patch
-
         with patch(
             "phoenix_etl.pipeline.write_transactions",
             side_effect=RuntimeError("simulated database failure"),
         ):
-            process_file(csv_file, pipeline_run_id)
+            process_file(
+                csv_file,
+                pipeline_run_id,
+            )
 
     with get_connection() as connection:
         with connection.cursor() as cursor:
@@ -220,7 +319,6 @@ def test_write_transactions_does_not_overwrite_newer_source_version() -> None:
         ),
     )
 
-    # Ensure the integration-test record does not already exist.
     with get_connection() as connection:
         with connection.cursor() as cursor:
             cursor.execute(
@@ -231,17 +329,14 @@ def test_write_transactions_does_not_overwrite_newer_source_version() -> None:
                 {"transaction_id": transaction_id},
             )
 
-    # Insert the newer version.
     result = write_transactions([newer_version])
 
     assert result == 1
 
-    # Attempt to overwrite it with an older source version.
     result = write_transactions([stale_version])
 
     assert result == 1
 
-    # Verify that the database still contains the newer version.
     with get_connection() as connection:
         with connection.cursor() as cursor:
             cursor.execute(
@@ -286,7 +381,6 @@ def test_write_transactions_does_not_overwrite_newer_source_version() -> None:
         tzinfo=timezone.utc,
     )
 
-    # Clean up the integration-test record.
     with get_connection() as connection:
         with connection.cursor() as cursor:
             cursor.execute(

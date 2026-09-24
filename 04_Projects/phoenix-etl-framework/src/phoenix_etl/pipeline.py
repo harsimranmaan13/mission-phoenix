@@ -12,7 +12,11 @@ from phoenix_etl.run_tracker import (
     start_pipeline_run,
 )
 from phoenix_etl.validator import validate_transaction
-from phoenix_etl.writer import write_rejected_records, write_transactions
+from phoenix_etl.writer import (
+    write_rejected_records,
+    write_rejected_records_to_db,
+    write_transactions,
+)
 
 logger = get_logger("pipeline")
 
@@ -110,8 +114,14 @@ def process_file(
             len(rejected_records),
         )
 
+        # Persist valid transactions.
         write_transactions(valid_records)
 
+        # Persist rejected records to PostgreSQL as the authoritative
+        # audit store.
+        write_rejected_records_to_db(rejected_records)
+
+        # Retain the CSV audit output for portability and troubleshooting.
         rejected_path = path.parent / "rejected_records.csv"
 
         write_rejected_records(

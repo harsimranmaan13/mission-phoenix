@@ -25,6 +25,7 @@ def test_process_file_separates_valid_and_invalid_records(
         patch("phoenix_etl.pipeline.complete_pipeline_run"),
         patch("phoenix_etl.pipeline.fail_pipeline_run"),
         patch("phoenix_etl.pipeline.write_transactions"),
+        patch("phoenix_etl.pipeline.write_rejected_records_to_db"),
         patch("phoenix_etl.pipeline.write_rejected_records"),
     ):
         result = process_file(csv_file, "run-001")
@@ -59,6 +60,7 @@ def test_process_file_preserves_pipeline_run_id(
         patch("phoenix_etl.pipeline.complete_pipeline_run"),
         patch("phoenix_etl.pipeline.fail_pipeline_run"),
         patch("phoenix_etl.pipeline.write_transactions"),
+        patch("phoenix_etl.pipeline.write_rejected_records_to_db"),
         patch("phoenix_etl.pipeline.write_rejected_records"),
     ):
         result = process_file(csv_file, "run-123")
@@ -69,7 +71,7 @@ def test_process_file_preserves_pipeline_run_id(
     assert result.rejected_records[0].pipeline_run_id == "run-123"
 
 
-def test_process_file_writes_rejected_records(
+def test_process_file_writes_rejected_records_to_db_and_csv(
     tmp_path: Path,
 ) -> None:
     csv_file = tmp_path / "transactions.csv"
@@ -89,10 +91,21 @@ def test_process_file_writes_rejected_records(
         patch("phoenix_etl.pipeline.complete_pipeline_run"),
         patch("phoenix_etl.pipeline.fail_pipeline_run"),
         patch("phoenix_etl.pipeline.write_transactions"),
+        patch("phoenix_etl.pipeline.write_rejected_records_to_db") as db_writer,
     ):
         result = process_file(csv_file, "run-001")
 
     assert result.rejected_count == 2
+
+    db_writer.assert_called_once()
+
+    persisted_rejected_records = db_writer.call_args.args[0]
+
+    assert len(persisted_rejected_records) == 2
+    assert [
+        record.original_record["transaction_id"]
+        for record in persisted_rejected_records
+    ] == ["T002", "T003"]
 
     rejected_path = tmp_path / "rejected_records.csv"
 
@@ -125,6 +138,7 @@ def test_pipeline_result_calculates_quality_rates(
         patch("phoenix_etl.pipeline.complete_pipeline_run"),
         patch("phoenix_etl.pipeline.fail_pipeline_run"),
         patch("phoenix_etl.pipeline.write_transactions"),
+        patch("phoenix_etl.pipeline.write_rejected_records_to_db"),
         patch("phoenix_etl.pipeline.write_rejected_records"),
     ):
         result = process_file(csv_file, "run-quality-001")
@@ -132,7 +146,6 @@ def test_pipeline_result_calculates_quality_rates(
     assert result.total_records == 5
     assert result.valid_count == 3
     assert result.rejected_count == 2
-
     assert result.valid_rate == 0.6
     assert result.rejection_rate == 0.4
 
@@ -150,6 +163,7 @@ def test_pipeline_result_handles_zero_records() -> None:
     assert result.rejected_count == 0
     assert result.valid_rate == 0.0
     assert result.rejection_rate == 0.0
+    assert result.records_per_second == 0.0
 
 
 def test_process_file_logs_pipeline_lifecycle(
@@ -170,6 +184,7 @@ def test_process_file_logs_pipeline_lifecycle(
         patch("phoenix_etl.pipeline.complete_pipeline_run"),
         patch("phoenix_etl.pipeline.fail_pipeline_run"),
         patch("phoenix_etl.pipeline.write_transactions"),
+        patch("phoenix_etl.pipeline.write_rejected_records_to_db"),
         patch("phoenix_etl.pipeline.write_rejected_records"),
     ):
         with caplog.at_level(
@@ -223,6 +238,7 @@ def test_process_file_logs_pipeline_failure(
             "phoenix_etl.pipeline.write_transactions",
             side_effect=RuntimeError("database unavailable"),
         ),
+        patch("phoenix_etl.pipeline.write_rejected_records_to_db"),
         patch("phoenix_etl.pipeline.write_rejected_records"),
     ):
         with caplog.at_level(
@@ -230,7 +246,10 @@ def test_process_file_logs_pipeline_failure(
             logger="phoenix_etl.pipeline",
         ):
             try:
-                process_file(csv_file, "logging-failure-001")
+                process_file(
+                    csv_file,
+                    "logging-failure-001",
+                )
             except RuntimeError as exc:
                 assert str(exc) == "database unavailable"
             else:
